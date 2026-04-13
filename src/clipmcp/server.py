@@ -1,0 +1,363 @@
+"""
+server.py — MCP server and tool definitions for ClipMCP.
+
+Starts the clipboard monitor on launch and exposes 7 MCP tools:
+  - get_recent_clips
+  - search_clips
+  - pin_clip
+  - unpin_clip
+  - delete_clip
+  - get_clip_stats
+  - clear_history
+
+Sensitive clip behaviour:
+  - is_sensitive=True clips show a ⚠️ warning and truncated preview by default
+  - Full content only returned when full_content=True is explicitly passed
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from typing import Any
+
+from mcp.server import Server
+from mcp.server.stdio import stdio_server
+from mcp.types import TextContent, Tool
+
+from . import storage
+from .monitor import monitor
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Server setup
+# ---------------------------------------------------------------------------
+
+app = Server("clipmcp")
+
+
+# ---------------------------------------------------------------------------
+# Tool: list_tools
+# ---------------------------------------------------------------------------
+
+@app.list_tools()
+async def list_tools() -> list[Tool]:
+    return [
+        Tool(
+            name="get_recent_clips",
+            description=(
+                "Get the most recent clipboard entries. "
+                "Use this when the user wants to see what they've recently copied, "
+                "or when they refer to something they just copied without pasting it. "
+                "Pass full_content=true only when the complete text is needed."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "count": {
+                        "type": "integer",
+                        "description": "Number of recent clips to return (default 10, max 50)",
+                        "default": 10,
+                    },
+                    "category": {
+                        "type": "string",
+                        "description": "Filter by category: text, url, email, code, path, sensitive",
+                        "enum": ["text", "url", "email", "code", "path", "sensitive"],
+                    },
+                    "full_content": {
+                        "type": "boolean",
+                        "description": "Return full content instead of preview (default false)",
+                        "default": False,
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="search_clips",
+            description=(
+                "Search clipboard history by content. "
+                "Use this when the user is looking for something specific they copied earlier — "
+                "an error message, a URL, a code snippet, or any text they remember partially. "
+                "Supports optional category and date filters."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Text to search for in clipboard history",
+                    },
+                    "category": {
+                        "type": "string",
+                        "description": "Optionally filter by category: text, url, email, code, path, sensitive",
+                        "enum": ["text", "url", "email", "code", "path", "sensitive"],
+                    },
+                    "date_from": {
+                        "type": "string",
+                        "description": "ISO date string to filter clips from (e.g. 2024-01-01)",
+                    },
+                    "date_to": {
+                        "type": "string",
+                        "description": "ISO date string to filter clips until (e.g. 2024-12-31)",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max results to return (default 20)",
+                        "default": 20,
+                    },
+                    "full_content": {
+                        "type": "boolean",
+                        "description": "Return full content instead of preview (default false)",
+                        "default": False,
+                    },
+                },
+                "required": ["query"],
+            },
+        ),
+        Tool(
+            name="pin_clip",
+            description=(
+                "Pin a clipboard entry so it won't be automatically pruned. "
+                "Use when the user wants to keep a specific clip permanently. "
+                "The clip id comes from a previous get_recent_clips or search_clips call."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "integer",
+                        "description": "The clip id to pin",
+                    },
+                },
+                "required": ["id"],
+            },
+        ),
+        Tool(
+            name="unpin_clip",
+            description="Unpin a previously pinned clipboard entry, allowing it to be pruned normally.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "integer",
+                        "description": "The clip id to unpin",
+                    },
+                },
+                "required": ["id"],
+            },
+        ),
+        Tool(
+            name="delete_clip",
+            description=(
+                "Permanently delete a specific clipboard entry. "
+                "Use when the user wants to remove a specific clip from history."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "integer",
+                        "description": "The clip id to delete",
+                    },
+                },
+                "required": ["id"],
+            },
+        ),
+        Tool(
+            name="get_clip_stats",
+            description=(
+                "Get usage statistics for clipboard history — total clips, clips today, "
+                "top categories, most used apps, and database size. "
+                "Use when the user asks about their clipboard usage."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="clear_history",
+            description=(
+                "Delete all clipboard history. This is destructive and cannot be undone. "
+                "Always confirm with the user before calling this. "
+                "By default keeps pinned clips."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "confirm": {
+                        "type": "boolean",
+                        "description": "Must be explicitly set to true to proceed",
+                    },
+                    "keep_pinned": {
+                        "type": "boolean",
+                        "description": "Keep pinned clips (default true)",
+                        "default": True,
+                    },
+                },
+                "required": ["confirm"],
+            },
+        ),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Tool: call_tool
+# ---------------------------------------------------------------------------
+
+@app.call_tool()
+async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
+    try:
+        if name == "get_recent_clips":
+            return await _get_recent_clips(arguments)
+        elif name == "search_clips":
+            return await _search_clips(arguments)
+        elif name == "pin_clip":
+            return await _pin_clip(arguments)
+        elif name == "unpin_clip":
+            return await _unpin_clip(arguments)
+        elif name == "delete_clip":
+            return await _delete_clip(arguments)
+        elif name == "get_clip_stats":
+            return await _get_clip_stats()
+        elif name == "clear_history":
+            return await _clear_history(arguments)
+        else:
+            return [TextContent(type="text", text=f"Unknown tool: {name}")]
+    except Exception as e:
+        logger.error(f"Error calling tool {name}: {e}", exc_info=True)
+        return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+
+# ---------------------------------------------------------------------------
+# Tool implementations
+# ---------------------------------------------------------------------------
+
+def _format_clip(clip: storage.Clip, full_content: bool = False) -> dict:
+    """Format a Clip for MCP response, handling sensitive content appropriately."""
+    data = clip.to_dict()
+
+    if clip.is_sensitive:
+        data["warning"] = "⚠️ This clip contains potentially sensitive content."
+        if not full_content:
+            # Further truncate sensitive previews for extra safety
+            data["content"] = clip.content_preview[:50] + "… [sensitive — request full_content=true to view]"
+
+    return data
+
+
+async def _get_recent_clips(args: dict) -> list[TextContent]:
+    count = min(int(args.get("count", 10)), 50)
+    category = args.get("category")
+    full_content = bool(args.get("full_content", False))
+
+    clips = storage.get_recent(count=count, category=category, full_content=full_content)
+
+    if not clips:
+        return [TextContent(type="text", text="No clipboard history found.")]
+
+    result = {
+        "count": len(clips),
+        "clips": [_format_clip(c, full_content=full_content) for c in clips],
+    }
+    return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+
+async def _search_clips(args: dict) -> list[TextContent]:
+    query = args.get("query", "")
+    if not query:
+        return [TextContent(type="text", text="Error: query is required.")]
+
+    full_content = bool(args.get("full_content", False))
+
+    clips = storage.search(
+        query=query,
+        category=args.get("category"),
+        date_from=args.get("date_from"),
+        date_to=args.get("date_to"),
+        limit=int(args.get("limit", 20)),
+        full_content=full_content,
+    )
+
+    if not clips:
+        return [TextContent(type="text", text=f"No clips found matching '{query}'.")]
+
+    result = {
+        "query": query,
+        "count": len(clips),
+        "clips": [_format_clip(c, full_content=full_content) for c in clips],
+    }
+    return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+
+async def _pin_clip(args: dict) -> list[TextContent]:
+    clip_id = int(args["id"])
+    success = storage.pin_clip(clip_id)
+    if success:
+        return [TextContent(type="text", text=f"✅ Clip #{clip_id} pinned successfully.")]
+    return [TextContent(type="text", text=f"❌ Clip #{clip_id} not found.")]
+
+
+async def _unpin_clip(args: dict) -> list[TextContent]:
+    clip_id = int(args["id"])
+    success = storage.unpin_clip(clip_id)
+    if success:
+        return [TextContent(type="text", text=f"✅ Clip #{clip_id} unpinned successfully.")]
+    return [TextContent(type="text", text=f"❌ Clip #{clip_id} not found.")]
+
+
+async def _delete_clip(args: dict) -> list[TextContent]:
+    clip_id = int(args["id"])
+    success = storage.delete_clip(clip_id)
+    if success:
+        return [TextContent(type="text", text=f"✅ Clip #{clip_id} deleted.")]
+    return [TextContent(type="text", text=f"❌ Clip #{clip_id} not found.")]
+
+
+async def _get_clip_stats() -> list[TextContent]:
+    stats = storage.get_stats()
+    return [TextContent(type="text", text=json.dumps(stats, indent=2))]
+
+
+async def _clear_history(args: dict) -> list[TextContent]:
+    if not args.get("confirm"):
+        return [TextContent(
+            type="text",
+            text="⚠️ clear_history requires confirm=true. This will permanently delete clipboard history."
+        )]
+
+    keep_pinned = bool(args.get("keep_pinned", True))
+    deleted = storage.clear_history(keep_pinned=keep_pinned)
+    pinned_note = " Pinned clips were kept." if keep_pinned else ""
+    return [TextContent(
+        type="text",
+        text=f"✅ Deleted {deleted} clips.{pinned_note}"
+    )]
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+async def serve() -> None:
+    """Start the monitor and run the MCP server over stdio."""
+    monitor.start()
+    logger.info("ClipMCP server started.")
+
+    try:
+        async with stdio_server() as (read_stream, write_stream):
+            await app.run(read_stream, write_stream, app.create_initialization_options())
+    finally:
+        monitor.stop()
+        logger.info("ClipMCP server stopped.")
+
+
+def main() -> None:
+    import asyncio
+    asyncio.run(serve())
+
+
+if __name__ == "__main__":
+    main()
