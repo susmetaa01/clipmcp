@@ -192,6 +192,7 @@ def insert_clip(
     content_type: str = "text",
     file_path: Optional[str] = None,
     content_hash: Optional[str] = None,
+    stripped_text: Optional[str] = None,
 ) -> Optional[int]:
     """
     Insert a new clip. Returns the new row id, or None if it's a duplicate
@@ -199,9 +200,20 @@ def insert_clip(
 
     For image clips, pass content_type='image', file_path=<path>,
     content=<preview string>, and content_hash=<hash of image bytes>.
+
+    For HTML clips, pass content_type='html', content=<raw HTML>,
+    and stripped_text=<plain text> — the stripped text is stored as
+    content_preview so Claude always sees readable text, not raw HTML.
     """
     if content_hash is None:
         content_hash = _hash(content)
+
+    # For HTML clips, content_preview is the stripped plain text.
+    # For everything else, it's the first PREVIEW_LENGTH chars of content.
+    if stripped_text is not None:
+        preview = _make_preview(stripped_text)
+    else:
+        preview = _make_preview(content)
 
     with _conn() as conn:
         # Dedup: check if most recent clip has the same hash
@@ -221,7 +233,7 @@ def insert_clip(
             """,
             (
                 content,
-                _make_preview(content),
+                preview,
                 content_hash,
                 category,
                 source_app,

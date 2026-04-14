@@ -26,6 +26,7 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool, ImageContent
 
 from . import storage
+from .html_handler import strip_html
 from .image_handler import load_image_b64
 from .monitor import monitor
 
@@ -65,7 +66,7 @@ async def list_tools() -> list[Tool]:
                     "category": {
                         "type": "string",
                         "description": "Filter by category: text, url, email, code, path, sensitive",
-                        "enum": ["text", "url", "email", "code", "path", "sensitive", "image"],
+                        "enum": ["text", "url", "email", "code", "path", "sensitive", "image", "html"],
                     },
                     "full_content": {
                         "type": "boolean",
@@ -93,7 +94,7 @@ async def list_tools() -> list[Tool]:
                     "category": {
                         "type": "string",
                         "description": "Optionally filter by category: text, url, email, code, path, sensitive",
-                        "enum": ["text", "url", "email", "code", "path", "sensitive", "image"],
+                        "enum": ["text", "url", "email", "code", "path", "sensitive", "image", "html"],
                     },
                     "date_from": {
                         "type": "string",
@@ -237,8 +238,15 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 # ---------------------------------------------------------------------------
 
 def _format_clip(clip: storage.Clip, full_content: bool = False) -> dict:
-    """Format a Clip as a dict for JSON responses (text clips only)."""
+    """Format a Clip as a dict for JSON responses (text and HTML clips)."""
     data = clip.to_dict()
+
+    # HTML clips: always show stripped plain text — never raw HTML.
+    # content_preview already holds the stripped version (set at insert time).
+    # Even full_content=True returns stripped text; raw HTML stays in the DB.
+    if clip.content_type == "html":
+        data["content"] = clip.content_preview
+        data["content_type"] = "html"
 
     if clip.is_sensitive:
         data["warning"] = "⚠️ This clip contains potentially sensitive content."
