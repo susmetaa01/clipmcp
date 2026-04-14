@@ -31,6 +31,7 @@ from typing import Optional
 
 from .categorizer import categorize
 from .config import config
+from .embeddings import embed, is_available as embeddings_available, text_for_clip
 from .html_handler import is_meaningful_html, strip_html
 from .image_handler import (
     MAX_IMAGE_SIZE_BYTES,
@@ -39,7 +40,7 @@ from .image_handler import (
     _tiff_to_png,
 )
 from .sensitive import is_sensitive
-from .storage import insert_clip
+from .storage import insert_clip, store_embedding
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +155,26 @@ def _get_frontmost_app() -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# Embedding helper
+# ---------------------------------------------------------------------------
+
+def _embed_and_store(clip_id: int, content: str, content_type: str, content_preview: str) -> None:
+    """
+    Generate an embedding for the clip and persist it.
+    No-op if sentence-transformers is not installed.
+    Runs in the monitor thread — takes ~5–15ms, negligible vs 500ms poll interval.
+    """
+    if not embeddings_available():
+        return
+    text = text_for_clip(content, content_type, content_preview)
+    if not text:
+        return
+    vec = embed(text)
+    if vec is not None:
+        store_embedding(clip_id, vec)
+
+
+# ---------------------------------------------------------------------------
 # Monitor thread
 # ---------------------------------------------------------------------------
 
@@ -248,6 +269,7 @@ class ClipboardMonitor:
                         f"Saved HTML clip #{clip_id} | category={category} | "
                         f"sensitive={sensitive} | app={source_app} | length={len(html)}"
                     )
+                    _embed_and_store(clip_id, html, "html", stripped)
 
                 self._last_content = html
                 return
@@ -280,6 +302,7 @@ class ClipboardMonitor:
                     f"Saved text clip #{clip_id} | category={category} | "
                     f"sensitive={sensitive} | app={source_app} | length={len(text)}"
                 )
+                _embed_and_store(clip_id, text, "text", text[:100])
 
             self._last_content = text
             return

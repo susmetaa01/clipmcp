@@ -1,9 +1,10 @@
 """
 server.py — MCP server and tool definitions for ClipMCP.
 
-Starts the clipboard monitor on launch and exposes 7 MCP tools:
+Starts the clipboard monitor on launch and exposes 8 MCP tools:
   - get_recent_clips
   - search_clips
+  - semantic_search
   - pin_clip
   - unpin_clip
   - delete_clip
@@ -26,6 +27,8 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool, ImageContent
 
 from . import storage
+from .embeddings import embed, is_available as embeddings_available
+from .embeddings import embed_batch, text_for_clip
 from .html_handler import strip_html
 from .image_handler import load_image_b64
 from .monitor import monitor
@@ -202,6 +205,48 @@ async def list_tools() -> list[Tool]:
                 "required": ["confirm"],
             },
         ),
+        Tool(
+            name="semantic_search",
+            description=(
+                "Search clipboard history by meaning, not just exact keywords. "
+                "Use this when the user describes what they copied conceptually — "
+                "e.g. 'the API endpoint I was looking at', 'something about Kubernetes deployment', "
+                "'the error message from earlier'. "
+                "Returns clips ranked by semantic similarity to the query. "
+                "Requires sentence-transformers to be installed (pip install clipmcp[semantic]). "
+                "Falls back to a helpful error if embeddings are not available."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Natural language description of what you're looking for",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max results to return (default 10)",
+                        "default": 10,
+                    },
+                    "threshold": {
+                        "type": "number",
+                        "description": "Minimum similarity score 0–1 (default 0.3). Lower = more results but less relevant.",
+                        "default": 0.3,
+                    },
+                    "category": {
+                        "type": "string",
+                        "description": "Optionally filter by category",
+                        "enum": ["text", "url", "email", "code", "path", "sensitive", "html"],
+                    },
+                    "full_content": {
+                        "type": "boolean",
+                        "description": "Return full content instead of preview (default false)",
+                        "default": False,
+                    },
+                },
+                "required": ["query"],
+            },
+        ),
     ]
 
 
@@ -226,6 +271,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             return await _get_clip_stats()
         elif name == "clear_history":
             return await _clear_history(arguments)
+        elif name == "semantic_search":
+            return await _semantic_search(arguments)
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
     except Exception as e:
@@ -388,6 +435,76 @@ async def _clear_history(args: dict) -> list[TextContent]:
         type="text",
         text=f"✅ Deleted {deleted} clips.{pinned_note}"
     )]
+
+
+async def _semantic_search(args: dict) -> list[TextContent]:
+    query = args.get("query", "").strip()
+    if not query:
+        return [TextContent(type="text", text="Error: query is required.")]
+
+    if not embeddings_available():
+        return [TextContent(
+            type="text",
+            text=(
+                "⚠️ Semantic search requires sentence-transformers.\n"
+                "Install it with: pip install clipmcp[semantic]\n"
+                "Then restart ClipMCP."
+            )
+        )]
+
+    limit = int(args.get("limit", 10))
+    threshold = float(args.get("threshold", 0.3))
+    category = args.get("category")
+    full_content = bool(args.get("full_content", False))
+
+    # Backfill embeddings for any clips that don't have them yet
+    # (existing clips added before v2.5, or while sentence-transformers was not installed)
+    pending = storage.get_clips_without_embeddings(limit=500)
+    if pending:
+        logger.info(f"Backfilling embeddings for {len(pending)} clips...")
+        texts = [text_for_clip(content, ctype, preview) or "" for _, content, ctype, preview in pending]
+        vecs = embed_batch(texts)
+        for (clip_id, _, _, _), vec in zip(pending, vecs):
+            if vec is not None:
+                storage.store_embedding(clip_id, vec)
+        logger.info("Backfill complete.")
+
+    # Embed the query
+    query_vec = embed(query)
+    if query_vec is None:
+        return [TextContent(type="text", text="Error: failed to embed query. Check logs.")]
+
+    # Search
+    results = storage.semantic_search_by_vector(
+        query_vec=query_vec,
+        limit=limit,
+        category=category,
+        threshold=threshold,
+        full_content=full_content,
+    )
+
+    if not results:
+        return [TextContent(
+            type="text",
+            text=f"No clips found semantically matching '{query}' (threshold={threshold})."
+        )]
+
+    # Format results — include similarity score alongside each clip
+    formatted = []
+    for clip, score in results:
+        clip_dict = _format_clip(clip, full_content=full_content)
+        clip_dict["similarity"] = round(score, 3)
+        formatted.append(clip_dict)
+
+    header = TextContent(
+        type="text",
+        text=f"Found {len(results)} clip(s) semantically matching '{query}':"
+    )
+    body = TextContent(
+        type="text",
+        text=json.dumps({"clips": formatted}, indent=2, default=str)
+    )
+    return [header, body]
 
 
 # ---------------------------------------------------------------------------

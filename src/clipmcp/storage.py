@@ -56,6 +56,8 @@ MIGRATIONS = [
     "ALTER TABLE clipboard_history ADD COLUMN file_path TEXT",
     # Index for content_type — added after the column migration so it works on old DBs too
     "CREATE INDEX IF NOT EXISTS idx_content_type ON clipboard_history(content_type)",
+    # v2.5: semantic search embedding vector (stored as BLOB)
+    "ALTER TABLE clipboard_history ADD COLUMN embedding BLOB",
 ]
 
 PREVIEW_LENGTH = 100  # chars shown in preview
@@ -377,6 +379,91 @@ def get_by_id(clip_id: int, full_content: bool = True) -> Optional[Clip]:
     if not row:
         return None
     return _row_to_clip(row, full_content=full_content)
+
+
+# ---------------------------------------------------------------------------
+# Semantic search (v2.5)
+# ---------------------------------------------------------------------------
+
+def store_embedding(clip_id: int, embedding: "np.ndarray") -> None:  # type: ignore[name-defined]
+    """Persist an embedding vector for a clip (as raw bytes in the BLOB column)."""
+    from .embeddings import to_blob
+    blob = to_blob(embedding)
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE clipboard_history SET embedding = ? WHERE id = ?",
+            (blob, clip_id),
+        )
+
+
+def get_clips_without_embeddings(limit: int = 500) -> list[tuple[int, str, str, str]]:
+    """
+    Return (id, content, content_type, content_preview) for clips that don't have
+    an embedding yet and are embeddable (text or html, not image).
+    Used for backfill on first semantic_search call.
+    """
+    with _conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, content, content_type, content_preview
+            FROM clipboard_history
+            WHERE embedding IS NULL
+              AND content_type != 'image'
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [(r["id"], r["content"], r["content_type"], r["content_preview"]) for r in rows]
+
+
+def semantic_search_by_vector(
+    query_vec: "np.ndarray",  # type: ignore[name-defined]
+    limit: int = 10,
+    category: Optional[str] = None,
+    threshold: float = 0.3,
+    full_content: bool = False,
+) -> list[tuple["Clip", float]]:  # type: ignore[name-defined]
+    """
+    Search clipboard history by semantic similarity to query_vec.
+
+    Loads all clips that have embeddings, computes cosine similarity,
+    returns the top `limit` results above `threshold` as (Clip, score) pairs,
+    sorted by descending similarity.
+    """
+    import numpy as np
+    from .embeddings import from_blob, rank_by_similarity
+
+    # Fetch all clips with embeddings (respecting optional category filter)
+    conditions = ["embedding IS NOT NULL"]
+    params: list = []
+    if category:
+        conditions.append("category = ?")
+        params.append(category)
+
+    where = " AND ".join(conditions)
+
+    with _conn() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM clipboard_history WHERE {where} ORDER BY created_at DESC",
+            params,
+        ).fetchall()
+
+    if not rows:
+        return []
+
+    # Deserialise embeddings into a matrix
+    clips = [_row_to_clip(r, full_content=full_content) for r in rows]
+    vecs = np.stack([from_blob(r["embedding"]) for r in rows])
+
+    # Score and rank
+    scores = rank_by_similarity(query_vec, vecs, threshold=threshold)
+
+    # Pair clips with scores, filter out below-threshold (-1.0), sort descending
+    paired = [(clip, float(score)) for clip, score in zip(clips, scores) if score >= threshold]
+    paired.sort(key=lambda x: x[1], reverse=True)
+
+    return paired[:limit]
 
 
 def get_stats() -> dict:

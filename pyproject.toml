@@ -19,6 +19,9 @@ secure = [
     "cryptography>=42.0.0",
     "keyring>=25.0.0",
 ]
+semantic = [
+    "sentence-transformers>=2.7.0",
+]
 
 [project.scripts]
 clipmcp = "clipmcp.server:main"
