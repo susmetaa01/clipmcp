@@ -56,7 +56,9 @@ async def list_tools() -> list[Tool]:
                 "Get the most recent clipboard entries. "
                 "Use this when the user wants to see what they've recently copied, "
                 "or when they refer to something they just copied without pasting it. "
-                "Pass full_content=true only when the complete text is needed."
+                "ALSO use this proactively when a user asks you to analyse, summarise, or act on "
+                "something without providing it inline — they may have just copied it to their clipboard. "
+                "Always use full_content=true when the user wants you to read or analyse the content."
             ),
             inputSchema={
                 "type": "object",
@@ -82,10 +84,13 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="search_clips",
             description=(
-                "Search clipboard history by content. "
+                "Search clipboard history by exact keyword or partial text match. "
                 "Use this when the user is looking for something specific they copied earlier — "
                 "an error message, a URL, a code snippet, or any text they remember partially. "
-                "Supports optional category and date filters."
+                "ALSO use this when a user asks you to analyse or act on a Slack conversation, "
+                "document, or any content they mention copying — search for keywords from the topic "
+                "before asking the user to paste it again. "
+                "Always use full_content=true when you need to read the full text, not just the preview."
             ),
             inputSchema={
                 "type": "object",
@@ -209,12 +214,14 @@ async def list_tools() -> list[Tool]:
             name="semantic_search",
             description=(
                 "Search clipboard history by meaning, not just exact keywords. "
-                "Use this when the user describes what they copied conceptually — "
-                "e.g. 'the API endpoint I was looking at', 'something about Kubernetes deployment', "
-                "'the error message from earlier'. "
-                "Returns clips ranked by semantic similarity to the query. "
-                "Requires sentence-transformers to be installed (pip install clipmcp[semantic]). "
-                "Falls back to a helpful error if embeddings are not available."
+                "Use this proactively when: "
+                "(1) the user asks you to analyse, summarise, or act on something they copied — "
+                "even if they don't say 'clipboard' or 'copied'; "
+                "(2) they describe content conceptually, e.g. 'the Slack thread about Grafana', "
+                "'the API error from earlier', 'what Mike said about the data issue'; "
+                "(3) they reference something from a recent conversation or document without pasting it. "
+                "Always use full_content=true when you need the full text to analyse. "
+                "Requires sentence-transformers (pip install clipmcp[semantic])."
             ),
             inputSchema={
                 "type": "object",
@@ -288,11 +295,14 @@ def _format_clip(clip: storage.Clip, full_content: bool = False) -> dict:
     """Format a Clip as a dict for JSON responses (text and HTML clips)."""
     data = clip.to_dict()
 
-    # HTML clips: always show stripped plain text — never raw HTML.
-    # content_preview already holds the stripped version (set at insert time).
-    # Even full_content=True returns stripped text; raw HTML stays in the DB.
+    # HTML clips: always return stripped plain text — never raw HTML.
+    # - Default (full_content=False): return the 100-char content_preview
+    # - full_content=True: strip the full raw HTML so Claude gets the entire conversation
     if clip.content_type == "html":
-        data["content"] = clip.content_preview
+        if full_content:
+            data["content"] = strip_html(clip.content)
+        else:
+            data["content"] = clip.content_preview
         data["content_type"] = "html"
 
     if clip.is_sensitive:
@@ -462,7 +472,12 @@ async def _semantic_search(args: dict) -> list[TextContent]:
     pending = storage.get_clips_without_embeddings(limit=500)
     if pending:
         logger.info(f"Backfilling embeddings for {len(pending)} clips...")
-        texts = [text_for_clip(content, ctype, preview) or "" for _, content, ctype, preview in pending]
+        # For HTML clips: strip the full raw HTML for embedding — NOT the 100-char DB preview
+        def _best_text(content: str, ctype: str, preview: str) -> str:
+            if ctype == "html":
+                return strip_html(content) or preview
+            return text_for_clip(content, ctype, preview) or ""
+        texts = [_best_text(content, ctype, preview) for _, content, ctype, preview in pending]
         vecs = embed_batch(texts)
         for (clip_id, _, _, _), vec in zip(pending, vecs):
             if vec is not None:
