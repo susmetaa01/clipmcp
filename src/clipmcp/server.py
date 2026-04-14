@@ -23,9 +23,10 @@ from typing import Any
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Tool
+from mcp.types import TextContent, Tool, ImageContent
 
 from . import storage
+from .image_handler import load_image_b64
 from .monitor import monitor
 
 logging.basicConfig(level=logging.INFO)
@@ -64,7 +65,7 @@ async def list_tools() -> list[Tool]:
                     "category": {
                         "type": "string",
                         "description": "Filter by category: text, url, email, code, path, sensitive",
-                        "enum": ["text", "url", "email", "code", "path", "sensitive"],
+                        "enum": ["text", "url", "email", "code", "path", "sensitive", "image"],
                     },
                     "full_content": {
                         "type": "boolean",
@@ -92,7 +93,7 @@ async def list_tools() -> list[Tool]:
                     "category": {
                         "type": "string",
                         "description": "Optionally filter by category: text, url, email, code, path, sensitive",
-                        "enum": ["text", "url", "email", "code", "path", "sensitive"],
+                        "enum": ["text", "url", "email", "code", "path", "sensitive", "image"],
                     },
                     "date_from": {
                         "type": "string",
@@ -236,19 +237,70 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 # ---------------------------------------------------------------------------
 
 def _format_clip(clip: storage.Clip, full_content: bool = False) -> dict:
-    """Format a Clip for MCP response, handling sensitive content appropriately."""
+    """Format a Clip as a dict for JSON responses (text clips only)."""
     data = clip.to_dict()
 
     if clip.is_sensitive:
         data["warning"] = "⚠️ This clip contains potentially sensitive content."
         if not full_content:
-            # Further truncate sensitive previews for extra safety
             data["content"] = clip.content_preview[:50] + "… [sensitive — request full_content=true to view]"
 
     return data
 
 
-async def _get_recent_clips(args: dict) -> list[TextContent]:
+def _build_clip_response(clips: list[storage.Clip], full_content: bool = False) -> list[TextContent | ImageContent]:
+    """
+    Build an MCP content list for a set of clips.
+    Image clips are returned as ImageContent so Claude can see them visually.
+    Text clips are returned as JSON in a single TextContent block.
+    """
+    response: list[TextContent | ImageContent] = []
+    text_clips = []
+
+    for clip in clips:
+        if clip.is_image and clip.file_path:
+            # First flush any accumulated text clips
+            if text_clips:
+                response.append(TextContent(
+                    type="text",
+                    text=json.dumps({"clips": text_clips}, indent=2, default=str)
+                ))
+                text_clips = []
+
+            # Add image
+            img_b64 = load_image_b64(clip.file_path)
+            if img_b64:
+                response.append(TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "id": clip.id,
+                        "content_type": "image",
+                        "content_preview": clip.content_preview,
+                        "source_app": clip.source_app,
+                        "created_at": clip.created_at,
+                    }, indent=2)
+                ))
+                response.append(ImageContent(
+                    type="image",
+                    data=img_b64,
+                    mimeType="image/png",
+                ))
+            else:
+                text_clips.append({**clip.to_dict(), "warning": "⚠️ Image file not found on disk."})
+        else:
+            text_clips.append(_format_clip(clip, full_content=full_content))
+
+    # Flush remaining text clips
+    if text_clips:
+        response.append(TextContent(
+            type="text",
+            text=json.dumps({"clips": text_clips}, indent=2, default=str)
+        ))
+
+    return response
+
+
+async def _get_recent_clips(args: dict) -> list[TextContent | ImageContent]:
     count = min(int(args.get("count", 10)), 50)
     category = args.get("category")
     full_content = bool(args.get("full_content", False))
@@ -258,14 +310,11 @@ async def _get_recent_clips(args: dict) -> list[TextContent]:
     if not clips:
         return [TextContent(type="text", text="No clipboard history found.")]
 
-    result = {
-        "count": len(clips),
-        "clips": [_format_clip(c, full_content=full_content) for c in clips],
-    }
-    return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+    header = TextContent(type="text", text=f"Found {len(clips)} clip(s):")
+    return [header] + _build_clip_response(clips, full_content=full_content)
 
 
-async def _search_clips(args: dict) -> list[TextContent]:
+async def _search_clips(args: dict) -> list[TextContent | ImageContent]:
     query = args.get("query", "")
     if not query:
         return [TextContent(type="text", text="Error: query is required.")]
@@ -284,12 +333,8 @@ async def _search_clips(args: dict) -> list[TextContent]:
     if not clips:
         return [TextContent(type="text", text=f"No clips found matching '{query}'.")]
 
-    result = {
-        "query": query,
-        "count": len(clips),
-        "clips": [_format_clip(c, full_content=full_content) for c in clips],
-    }
-    return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+    header = TextContent(type="text", text=f"Found {len(clips)} clip(s) matching '{query}':")
+    return [header] + _build_clip_response(clips, full_content=full_content)
 
 
 async def _pin_clip(args: dict) -> list[TextContent]:

@@ -26,6 +26,12 @@ from typing import Optional
 
 from .categorizer import categorize
 from .config import config
+from .image_handler import (
+    MAX_IMAGE_SIZE_BYTES,
+    image_hash,
+    save_image,
+    _tiff_to_png,
+)
 from .sensitive import is_sensitive
 from .storage import insert_clip
 
@@ -49,7 +55,7 @@ def _read_clipboard() -> Optional[str]:
 
 
 def _read_clipboard_macos() -> Optional[str]:
-    """Read clipboard via native macOS AppKit pasteboard."""
+    """Read clipboard text via native macOS AppKit pasteboard."""
     try:
         from AppKit import NSPasteboard, NSStringPboardType  # type: ignore
         pb = NSPasteboard.generalPasteboard()
@@ -63,6 +69,32 @@ def _read_clipboard_macos() -> Optional[str]:
         return _read_clipboard_fallback()
     except Exception as e:
         logger.debug(f"Error reading macOS clipboard: {e}")
+        return None
+
+
+def _read_clipboard_image_macos() -> Optional[bytes]:
+    """
+    Read image from macOS clipboard as PNG bytes.
+    Prefers PNG, falls back to TIFF (converted to PNG).
+    Returns None if no image on clipboard.
+    """
+    try:
+        from AppKit import NSPasteboard  # type: ignore
+        pb = NSPasteboard.generalPasteboard()
+
+        # Try PNG first
+        png_data = pb.dataForType_("public.png")
+        if png_data and len(png_data) > 0:
+            return bytes(png_data)
+
+        # Fall back to TIFF and convert
+        tiff_data = pb.dataForType_("public.tiff")
+        if tiff_data and len(tiff_data) > 0:
+            return _tiff_to_png(bytes(tiff_data))
+
+        return None
+    except Exception as e:
+        logger.debug(f"Error reading image from macOS clipboard: {e}")
         return None
 
 
@@ -156,52 +188,89 @@ class ClipboardMonitor:
             self._stop_event.wait(timeout=interval)
 
     def _poll(self) -> None:
-        """Single poll cycle: read clipboard, check for changes, persist if new."""
-        content = _read_clipboard()
+        """
+        Single poll cycle: read clipboard, check for changes, persist if new.
+        Text takes priority — if text is present, image is ignored for that cycle.
+        """
+        # --- Text path (existing behaviour) ---
+        text = _read_clipboard()
+        if text:
+            if text == self._last_content:
+                return
 
-        # Nothing on clipboard or non-text content
-        if not content:
-            return
+            if len(text.encode("utf-8")) > config.max_clip_size_bytes:
+                logger.debug(f"Skipping oversized text clip ({len(text.encode('utf-8'))} bytes)")
+                self._last_content = text
+                return
 
-        # In-memory dedup: skip if same as last seen (fast path before DB hit)
-        if content == self._last_content:
-            return
+            sensitive = is_sensitive(text) if config.detect_sensitive else False
+            category = categorize(text) if config.categories_enabled else "text"
+            source_app = _get_frontmost_app()
 
-        # Size guard: skip oversized clips
-        if len(content.encode("utf-8")) > config.max_clip_size_bytes:
-            logger.debug(
-                f"Skipping oversized clip ({len(content.encode('utf-8'))} bytes > "
-                f"{config.max_clip_size_bytes} bytes limit)"
+            clip_id = insert_clip(
+                content=text,
+                category=category,
+                source_app=source_app,
+                is_sensitive=sensitive,
+                content_type="text",
             )
-            self._last_content = content  # still update last seen to avoid log spam
+
+            if clip_id is not None:
+                logger.debug(
+                    f"Saved text clip #{clip_id} | category={category} | "
+                    f"sensitive={sensitive} | app={source_app} | length={len(text)}"
+                )
+
+            self._last_content = text
             return
 
-        # Detect sensitive content
-        sensitive = is_sensitive(content) if config.detect_sensitive else False
+        # --- Image path (v1.1) ---
+        if platform.system() == "Darwin":
+            self._poll_image()
 
-        # Categorize
-        category = categorize(content) if config.categories_enabled else "text"
+    def _poll_image(self) -> None:
+        """Check for a new image on the clipboard and persist it if found."""
+        image_bytes = _read_clipboard_image_macos()
+        if not image_bytes:
+            return
 
-        # Source app (best-effort)
+        # In-memory dedup via hash
+        img_hash = image_hash(image_bytes)
+        if img_hash == self._last_content:
+            return
+
+        # Size guard: 5MB max
+        if len(image_bytes) > MAX_IMAGE_SIZE_BYTES:
+            logger.debug(f"Skipping oversized image ({len(image_bytes)} bytes > {MAX_IMAGE_SIZE_BYTES})")
+            self._last_content = img_hash
+            return
+
         source_app = _get_frontmost_app()
 
-        # Persist — storage.insert_clip handles DB-level dedup
+        # Save image to disk
+        result = save_image(image_bytes)
+        if result is None:
+            logger.error("Failed to save image to disk, skipping")
+            return
+
+        file_path, preview = result
+
         clip_id = insert_clip(
-            content=content,
-            category=category,
+            content=preview,           # e.g. "[image: 1024×768 PNG, 245KB]"
+            category="image",
             source_app=source_app,
-            is_sensitive=sensitive,
+            is_sensitive=False,
+            content_type="image",
+            file_path=file_path,
+            content_hash=img_hash,
         )
 
         if clip_id is not None:
             logger.debug(
-                f"Saved clip #{clip_id} | category={category} | "
-                f"sensitive={sensitive} | app={source_app} | "
-                f"length={len(content)}"
+                f"Saved image clip #{clip_id} | {preview} | app={source_app}"
             )
 
-        # Always update last seen, even if insert was a DB-level dedup
-        self._last_content = content
+        self._last_content = img_hash
 
 
 # ---------------------------------------------------------------------------
