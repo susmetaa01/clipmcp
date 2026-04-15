@@ -4,7 +4,7 @@ monitor.py — Background clipboard monitoring daemon for ClipMCP.
 Runs as a daemon thread alongside the MCP server.
 Polls the macOS system pasteboard every poll_interval_ms milliseconds.
 On each new clipboard entry:
-  1. Checks size limit
+  1. Truncates to size limit (keeps first max_clip_size_bytes, appends "… [truncated]")
   2. Detects sensitive content
   3. Categorizes content
   4. Detects source app (best-effort)
@@ -155,6 +155,24 @@ def _get_frontmost_app() -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# Truncation helper
+# ---------------------------------------------------------------------------
+
+def _truncate_to_limit(text: str, max_bytes: int) -> tuple[str, bool]:
+    """
+    Truncate text so its UTF-8 encoding fits within max_bytes.
+    Returns (truncated_text, was_truncated).
+
+    Uses errors='ignore' on decode to avoid splitting a multi-byte character.
+    """
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text, False
+    truncated = encoded[:max_bytes].decode("utf-8", errors="ignore")
+    return truncated + " … [truncated]", True
+
+
+# ---------------------------------------------------------------------------
 # Embedding helper
 # ---------------------------------------------------------------------------
 
@@ -245,10 +263,9 @@ class ClipboardMonitor:
                 if html == self._last_content:
                     return
 
-                if len(html.encode("utf-8")) > config.max_clip_size_bytes:
-                    logger.debug(f"Skipping oversized HTML clip ({len(html.encode('utf-8'))} bytes)")
-                    self._last_content = html
-                    return
+                html, was_truncated = _truncate_to_limit(html, config.max_clip_size_bytes)
+                if was_truncated:
+                    logger.debug(f"HTML clip truncated to {config.max_clip_size_bytes} bytes")
 
                 stripped = strip_html(html)
                 sensitive = is_sensitive(stripped) if config.detect_sensitive else False
@@ -280,10 +297,9 @@ class ClipboardMonitor:
             if text == self._last_content:
                 return
 
-            if len(text.encode("utf-8")) > config.max_clip_size_bytes:
-                logger.debug(f"Skipping oversized text clip ({len(text.encode('utf-8'))} bytes)")
-                self._last_content = text
-                return
+            text, was_truncated = _truncate_to_limit(text, config.max_clip_size_bytes)
+            if was_truncated:
+                logger.debug(f"Text clip truncated to {config.max_clip_size_bytes} bytes")
 
             sensitive = is_sensitive(text) if config.detect_sensitive else False
             category = categorize(text) if config.categories_enabled else "text"

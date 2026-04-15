@@ -54,11 +54,13 @@ async def list_tools() -> list[Tool]:
             name="get_recent_clips",
             description=(
                 "Get the most recent clipboard entries. "
-                "Use this when the user wants to see what they've recently copied, "
-                "or when they refer to something they just copied without pasting it. "
-                "ALSO use this proactively when a user asks you to analyse, summarise, or act on "
-                "something without providing it inline — they may have just copied it to their clipboard. "
-                "Always use full_content=true when the user wants you to read or analyse the content."
+                "ALWAYS call this tool FIRST — before asking the user to provide content — whenever: "
+                "(1) the user says 'analyse', 'summarise', 'explain', 'review', or 'help me with' "
+                "something without pasting the content into the message; "
+                "(2) they say 'I copied', 'I just copied', 'from what I copied', or 'the X I copied'; "
+                "(3) they refer to a document, error, conversation, or case without attaching it. "
+                "Do NOT ask the user to paste or upload — check clipboard first. "
+                "Always use full_content=true when reading or analysing content."
             ),
             inputSchema={
                 "type": "object",
@@ -85,12 +87,11 @@ async def list_tools() -> list[Tool]:
             name="search_clips",
             description=(
                 "Search clipboard history by exact keyword or partial text match. "
-                "Use this when the user is looking for something specific they copied earlier — "
-                "an error message, a URL, a code snippet, or any text they remember partially. "
-                "ALSO use this when a user asks you to analyse or act on a Slack conversation, "
-                "document, or any content they mention copying — search for keywords from the topic "
-                "before asking the user to paste it again. "
-                "Always use full_content=true when you need to read the full text, not just the preview."
+                "ALWAYS call this tool when the user asks you to analyse, review, or summarise "
+                "a specific named thing — an 'AWS case', 'the error', 'the Slack thread', "
+                "'the document', 'the logs' — without pasting the content. "
+                "Search for the topic keywords and use full_content=true to retrieve the full text. "
+                "Never ask the user to paste or re-share something they may have already copied."
             ),
             inputSchema={
                 "type": "object",
@@ -214,13 +215,12 @@ async def list_tools() -> list[Tool]:
             name="semantic_search",
             description=(
                 "Search clipboard history by meaning, not just exact keywords. "
-                "Use this proactively when: "
-                "(1) the user asks you to analyse, summarise, or act on something they copied — "
-                "even if they don't say 'clipboard' or 'copied'; "
-                "(2) they describe content conceptually, e.g. 'the Slack thread about Grafana', "
-                "'the API error from earlier', 'what Mike said about the data issue'; "
-                "(3) they reference something from a recent conversation or document without pasting it. "
-                "Always use full_content=true when you need the full text to analyse. "
+                "ALWAYS call this tool when the user asks you to analyse, summarise, explain, or act on "
+                "something they haven't pasted into the message — even if they don't mention 'clipboard'. "
+                "Trigger examples: 'analyse the AWS case', 'summarise the errors', "
+                "'what does the report say', 'help me understand the issue', "
+                "'the Slack thread about Grafana', 'what Mike said about the data'. "
+                "Use the topic as the query. Always use full_content=true to get the actual content. "
                 "Requires sentence-transformers (pip install clipmcp[semantic])."
             ),
             inputSchema={
