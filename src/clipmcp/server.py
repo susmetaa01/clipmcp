@@ -58,7 +58,9 @@ async def list_tools() -> list[Tool]:
                 "(1) the user says 'analyse', 'summarise', 'explain', 'review', or 'help me with' "
                 "something without pasting the content into the message; "
                 "(2) they say 'I copied', 'I just copied', 'from what I copied', or 'the X I copied'; "
-                "(3) they refer to a document, error, conversation, or case without attaching it. "
+                "(3) they refer to a document, error, conversation, or case without attaching it; "
+                "(4) they ask to debug something, mention an error, exception, or stack trace — "
+                "use category='error' to find error clips instantly. "
                 "Do NOT ask the user to paste or upload — check clipboard first. "
                 "Always use full_content=true when reading or analysing content."
             ),
@@ -73,7 +75,7 @@ async def list_tools() -> list[Tool]:
                     "category": {
                         "type": "string",
                         "description": "Filter by category: text, url, email, code, path, sensitive",
-                        "enum": ["text", "url", "email", "code", "path", "sensitive", "image", "html"],
+                        "enum": ["text", "url", "email", "code", "error", "path", "sensitive", "image", "html"],
                     },
                     "full_content": {
                         "type": "boolean",
@@ -103,7 +105,7 @@ async def list_tools() -> list[Tool]:
                     "category": {
                         "type": "string",
                         "description": "Optionally filter by category: text, url, email, code, path, sensitive",
-                        "enum": ["text", "url", "email", "code", "path", "sensitive", "image", "html"],
+                        "enum": ["text", "url", "email", "code", "error", "path", "sensitive", "image", "html"],
                     },
                     "date_from": {
                         "type": "string",
@@ -243,7 +245,7 @@ async def list_tools() -> list[Tool]:
                     "category": {
                         "type": "string",
                         "description": "Optionally filter by category",
-                        "enum": ["text", "url", "email", "code", "path", "sensitive", "html"],
+                        "enum": ["text", "url", "email", "code", "error", "path", "sensitive", "html"],
                     },
                     "full_content": {
                         "type": "boolean",
