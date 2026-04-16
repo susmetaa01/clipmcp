@@ -1,10 +1,11 @@
 """
 server.py — MCP server and tool definitions for ClipMCP.
 
-Starts the clipboard monitor on launch and exposes 8 MCP tools:
+Starts the clipboard monitor on launch and exposes 9 MCP tools:
   - get_recent_clips
   - search_clips
   - semantic_search
+  - get_debug_context
   - pin_clip
   - unpin_clip
   - delete_clip
@@ -256,6 +257,29 @@ async def list_tools() -> list[Tool]:
                 "required": ["query"],
             },
         ),
+        Tool(
+            name="get_debug_context",
+            description=(
+                "Fetch recent clipboard items bundled together as debug context. "
+                "ALWAYS call this tool when the user says 'debug', 'fix this error', "
+                "'what's wrong', 'help me understand this issue', 'I'm getting an error', "
+                "'it's not working', or any debugging/troubleshooting request — "
+                "even if they haven't pasted anything. "
+                "Returns the last N clipboard items with full content, errors and code first, "
+                "so Claude has the complete picture (error + stack trace + relevant code + logs) "
+                "without the user needing to paste each item individually."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Number of recent clips to bundle (default 10, max 20)",
+                        "default": 10,
+                    },
+                },
+            },
+        ),
     ]
 
 
@@ -282,6 +306,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             return await _clear_history(arguments)
         elif name == "semantic_search":
             return await _semantic_search(arguments)
+        elif name == "get_debug_context":
+            return await _get_debug_context(arguments)
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
     except Exception as e:
@@ -522,6 +548,50 @@ async def _semantic_search(args: dict) -> list[TextContent]:
         text=json.dumps({"clips": formatted}, indent=2, default=str)
     )
     return [header, body]
+
+
+async def _get_debug_context(args: dict) -> list[TextContent]:
+    limit = min(int(args.get("limit", 10)), 20)
+
+    clips = storage.get_recent(count=limit, full_content=True)
+    if not clips:
+        return [TextContent(type="text", text="No clipboard history found.")]
+
+    # Prioritise: errors first, then code, then everything else (preserve recency within each group)
+    _PRIORITY = {"error": 0, "code": 1}
+    errors  = [c for c in clips if c.category == "error"]
+    code    = [c for c in clips if c.category == "code"]
+    rest    = [c for c in clips if c.category not in ("error", "code")]
+    ordered = errors + code + rest
+
+    # Build a single readable context block
+    lines = [f"=== Debug Context — last {len(ordered)} clipboard item(s) ===\n"]
+
+    for i, clip in enumerate(ordered, 1):
+        # Timestamp relative label
+        label = f"[{i}] {clip.category.upper()}"
+        if clip.source_app:
+            label += f" · from {clip.source_app}"
+        label += f" · {clip.created_at}"
+        if clip.is_sensitive:
+            label += " · ⚠️ sensitive"
+
+        lines.append(label)
+        lines.append("-" * len(label))
+
+        # Content: for HTML use stripped text (already done by _format_clip via full_content),
+        # for sensitive show warning, for everything else show full content
+        if clip.content_type == "html":
+            content = strip_html(clip.content)
+        elif clip.is_sensitive:
+            content = f"[sensitive content — {clip.char_count} chars]"
+        else:
+            content = clip.content
+
+        lines.append(content.strip())
+        lines.append("")  # blank line between items
+
+    return [TextContent(type="text", text="\n".join(lines))]
 
 
 # ---------------------------------------------------------------------------
