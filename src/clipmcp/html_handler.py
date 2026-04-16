@@ -9,13 +9,45 @@ web pages, Notion, Google Docs, Slack).
 
 Raw HTML is stored in the DB for fidelity.
 Stripped plain text is what Claude and previews show.
+
+Robustness note:
+  Slack and other apps embed <svg> icon elements throughout their HTML.
+  Relying on tag-depth tracking to skip these is fragile — malformed or
+  self-closing SVGs leave _skip_depth permanently incremented, silently
+  dropping all text that follows. We pre-strip noisy blocks with regex
+  before feeding to the parser, avoiding this class of bug entirely.
 """
 
 from __future__ import annotations
 
 import html as _html_stdlib
+import re
 from html.parser import HTMLParser
 from typing import Optional
+
+
+# ---------------------------------------------------------------------------
+# Pre-processing: regex-strip noisy blocks before HTML parsing
+# ---------------------------------------------------------------------------
+
+# These blocks are stripped entirely (tags + contents) before parsing.
+# Using regex here is intentional and safe — these are well-delimited blocks.
+_BLOCK_STRIP_PATTERNS = [
+    re.compile(r"<script[\s\S]*?</script>", re.IGNORECASE),
+    re.compile(r"<style[\s\S]*?</style>", re.IGNORECASE),
+    re.compile(r"<svg[\s\S]*?</svg>", re.IGNORECASE),    # Slack/web icons
+    re.compile(r"<head[\s\S]*?</head>", re.IGNORECASE),
+    re.compile(r"<noscript[\s\S]*?</noscript>", re.IGNORECASE),
+    re.compile(r"<iframe[\s\S]*?</iframe>", re.IGNORECASE),
+]
+
+
+def _preprocess(html_content: str) -> str:
+    """Remove noisy block elements before parsing."""
+    result = html_content
+    for pattern in _BLOCK_STRIP_PATTERNS:
+        result = pattern.sub(" ", result)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -29,36 +61,30 @@ _BLOCK_TAGS = {
     "footer", "nav", "aside", "figure", "figcaption",
 }
 
-# Tags whose content we skip entirely (scripts, styles, metadata)
-_SKIP_TAGS = {"script", "style", "head", "noscript", "svg", "iframe"}
-
 
 class _TextExtractor(HTMLParser):
     """
     Minimal HTML → plain text extractor.
     Preserves paragraph breaks, collapses whitespace.
+
+    After pre-processing, no skip-tag logic is needed — noisy blocks
+    have already been removed by regex.
     """
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self._parts: list[str] = []
-        self._skip_depth: int = 0
 
     def handle_starttag(self, tag: str, attrs: list) -> None:
-        if tag in _SKIP_TAGS:
-            self._skip_depth += 1
-        elif tag in _BLOCK_TAGS:
+        if tag in _BLOCK_TAGS:
             self._parts.append("\n")
 
     def handle_endtag(self, tag: str) -> None:
-        if tag in _SKIP_TAGS:
-            self._skip_depth = max(0, self._skip_depth - 1)
-        elif tag in _BLOCK_TAGS:
+        if tag in _BLOCK_TAGS:
             self._parts.append("\n")
 
     def handle_data(self, data: str) -> None:
-        if self._skip_depth == 0:
-            self._parts.append(data)
+        self._parts.append(data)
 
     def get_text(self) -> str:
         raw = "".join(self._parts)
@@ -73,17 +99,20 @@ def strip_html(html_content: str) -> str:
     """
     Extract readable plain text from an HTML string.
 
-    - Removes all tags
+    - Pre-strips <script>, <style>, <svg>, <head>, <noscript>, <iframe> blocks
+    - Removes all remaining tags
     - Decodes HTML entities (&amp; → &, &lt; → <, etc.)
-    - Drops script/style/head content
     - Preserves paragraph structure as newlines
     - Collapses whitespace
 
     Returns an empty string if parsing fails.
     """
+    if not html_content:
+        return ""
     try:
+        preprocessed = _preprocess(html_content)
         parser = _TextExtractor()
-        parser.feed(html_content)
+        parser.feed(preprocessed)
         return parser.get_text()
     except Exception:
         # Malformed HTML — fall back to naive tag stripping
@@ -92,7 +121,6 @@ def strip_html(html_content: str) -> str:
 
 def _naive_strip(html_content: str) -> str:
     """Last-resort fallback: remove all < > tags, unescape entities."""
-    import re
     no_tags = re.sub(r"<[^>]+>", " ", html_content)
     return " ".join(_html_stdlib.unescape(no_tags).split())
 

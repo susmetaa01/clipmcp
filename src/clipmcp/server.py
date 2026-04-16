@@ -1,9 +1,10 @@
 """
 server.py — MCP server and tool definitions for ClipMCP.
 
-Starts the clipboard monitor on launch and exposes 7 MCP tools:
+Starts the clipboard monitor on launch and exposes 8 MCP tools:
   - get_recent_clips
   - search_clips
+  - semantic_search
   - pin_clip
   - unpin_clip
   - delete_clip
@@ -26,6 +27,8 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool, ImageContent
 
 from . import storage
+from .embeddings import embed, is_available as embeddings_available
+from .embeddings import embed_batch, text_for_clip
 from .html_handler import strip_html
 from .image_handler import load_image_b64
 from .monitor import monitor
@@ -51,9 +54,13 @@ async def list_tools() -> list[Tool]:
             name="get_recent_clips",
             description=(
                 "Get the most recent clipboard entries. "
-                "Use this when the user wants to see what they've recently copied, "
-                "or when they refer to something they just copied without pasting it. "
-                "Pass full_content=true only when the complete text is needed."
+                "ALWAYS call this tool FIRST — before asking the user to provide content — whenever: "
+                "(1) the user says 'analyse', 'summarise', 'explain', 'review', or 'help me with' "
+                "something without pasting the content into the message; "
+                "(2) they say 'I copied', 'I just copied', 'from what I copied', or 'the X I copied'; "
+                "(3) they refer to a document, error, conversation, or case without attaching it. "
+                "Do NOT ask the user to paste or upload — check clipboard first. "
+                "Always use full_content=true when reading or analysing content."
             ),
             inputSchema={
                 "type": "object",
@@ -79,10 +86,12 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="search_clips",
             description=(
-                "Search clipboard history by content. "
-                "Use this when the user is looking for something specific they copied earlier — "
-                "an error message, a URL, a code snippet, or any text they remember partially. "
-                "Supports optional category and date filters."
+                "Search clipboard history by exact keyword or partial text match. "
+                "ALWAYS call this tool when the user asks you to analyse, review, or summarise "
+                "a specific named thing — an 'AWS case', 'the error', 'the Slack thread', "
+                "'the document', 'the logs' — without pasting the content. "
+                "Search for the topic keywords and use full_content=true to retrieve the full text. "
+                "Never ask the user to paste or re-share something they may have already copied."
             ),
             inputSchema={
                 "type": "object",
@@ -202,6 +211,49 @@ async def list_tools() -> list[Tool]:
                 "required": ["confirm"],
             },
         ),
+        Tool(
+            name="semantic_search",
+            description=(
+                "Search clipboard history by meaning, not just exact keywords. "
+                "ALWAYS call this tool when the user asks you to analyse, summarise, explain, or act on "
+                "something they haven't pasted into the message — even if they don't mention 'clipboard'. "
+                "Trigger examples: 'analyse the AWS case', 'summarise the errors', "
+                "'what does the report say', 'help me understand the issue', "
+                "'the Slack thread about Grafana', 'what Mike said about the data'. "
+                "Use the topic as the query. Always use full_content=true to get the actual content. "
+                "Requires sentence-transformers (pip install clipmcp[semantic])."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Natural language description of what you're looking for",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max results to return (default 10)",
+                        "default": 10,
+                    },
+                    "threshold": {
+                        "type": "number",
+                        "description": "Minimum similarity score 0–1 (default 0.3). Lower = more results but less relevant.",
+                        "default": 0.3,
+                    },
+                    "category": {
+                        "type": "string",
+                        "description": "Optionally filter by category",
+                        "enum": ["text", "url", "email", "code", "path", "sensitive", "html"],
+                    },
+                    "full_content": {
+                        "type": "boolean",
+                        "description": "Return full content instead of preview (default false)",
+                        "default": False,
+                    },
+                },
+                "required": ["query"],
+            },
+        ),
     ]
 
 
@@ -226,6 +278,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             return await _get_clip_stats()
         elif name == "clear_history":
             return await _clear_history(arguments)
+        elif name == "semantic_search":
+            return await _semantic_search(arguments)
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
     except Exception as e:
@@ -241,11 +295,14 @@ def _format_clip(clip: storage.Clip, full_content: bool = False) -> dict:
     """Format a Clip as a dict for JSON responses (text and HTML clips)."""
     data = clip.to_dict()
 
-    # HTML clips: always show stripped plain text — never raw HTML.
-    # content_preview already holds the stripped version (set at insert time).
-    # Even full_content=True returns stripped text; raw HTML stays in the DB.
+    # HTML clips: always return stripped plain text — never raw HTML.
+    # - Default (full_content=False): return the 100-char content_preview
+    # - full_content=True: strip the full raw HTML so Claude gets the entire conversation
     if clip.content_type == "html":
-        data["content"] = clip.content_preview
+        if full_content:
+            data["content"] = strip_html(clip.content)
+        else:
+            data["content"] = clip.content_preview
         data["content_type"] = "html"
 
     if clip.is_sensitive:
@@ -388,6 +445,81 @@ async def _clear_history(args: dict) -> list[TextContent]:
         type="text",
         text=f"✅ Deleted {deleted} clips.{pinned_note}"
     )]
+
+
+async def _semantic_search(args: dict) -> list[TextContent]:
+    query = args.get("query", "").strip()
+    if not query:
+        return [TextContent(type="text", text="Error: query is required.")]
+
+    if not embeddings_available():
+        return [TextContent(
+            type="text",
+            text=(
+                "⚠️ Semantic search requires sentence-transformers.\n"
+                "Install it with: pip install clipmcp[semantic]\n"
+                "Then restart ClipMCP."
+            )
+        )]
+
+    limit = int(args.get("limit", 10))
+    threshold = float(args.get("threshold", 0.3))
+    category = args.get("category")
+    full_content = bool(args.get("full_content", False))
+
+    # Backfill embeddings for any clips that don't have them yet
+    # (existing clips added before v2.5, or while sentence-transformers was not installed)
+    pending = storage.get_clips_without_embeddings(limit=500)
+    if pending:
+        logger.info(f"Backfilling embeddings for {len(pending)} clips...")
+        # For HTML clips: strip the full raw HTML for embedding — NOT the 100-char DB preview
+        def _best_text(content: str, ctype: str, preview: str) -> str:
+            if ctype == "html":
+                return strip_html(content) or preview
+            return text_for_clip(content, ctype, preview) or ""
+        texts = [_best_text(content, ctype, preview) for _, content, ctype, preview in pending]
+        vecs = embed_batch(texts)
+        for (clip_id, _, _, _), vec in zip(pending, vecs):
+            if vec is not None:
+                storage.store_embedding(clip_id, vec)
+        logger.info("Backfill complete.")
+
+    # Embed the query
+    query_vec = embed(query)
+    if query_vec is None:
+        return [TextContent(type="text", text="Error: failed to embed query. Check logs.")]
+
+    # Search
+    results = storage.semantic_search_by_vector(
+        query_vec=query_vec,
+        limit=limit,
+        category=category,
+        threshold=threshold,
+        full_content=full_content,
+    )
+
+    if not results:
+        return [TextContent(
+            type="text",
+            text=f"No clips found semantically matching '{query}' (threshold={threshold})."
+        )]
+
+    # Format results — include similarity score alongside each clip
+    formatted = []
+    for clip, score in results:
+        clip_dict = _format_clip(clip, full_content=full_content)
+        clip_dict["similarity"] = round(score, 3)
+        formatted.append(clip_dict)
+
+    header = TextContent(
+        type="text",
+        text=f"Found {len(results)} clip(s) semantically matching '{query}':"
+    )
+    body = TextContent(
+        type="text",
+        text=json.dumps({"clips": formatted}, indent=2, default=str)
+    )
+    return [header, body]
 
 
 # ---------------------------------------------------------------------------
