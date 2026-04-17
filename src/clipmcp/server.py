@@ -128,16 +128,16 @@ def _format_clip(clip: storage.Clip, full_content: bool = False) -> dict:
         data["warning"] = "This clip contains potentially sensitive content."
         if not full_content:
             data["content"] = (
-                clip.content_preview[:50] +
-                "... [sensitive - request full_content=true to view]"
+                    clip.content_preview[:50] +
+                    "... [sensitive - request full_content=true to view]"
             )
 
     return data
 
 
 def _build_clip_response(
-    clips: list[storage.Clip],
-    full_content: bool = False,
+        clips: list[storage.Clip],
+        full_content: bool = False,
 ) -> _ContentList:
     """
     Build an MCP content list for a set of clips.
@@ -194,7 +194,7 @@ async def _get_recent_clips(args: dict) -> _ContentList:
         return [TextContent(type="text", text="No clipboard history found.")]
 
     return [TextContent(type="text", text=f"Found {len(clips)} clip(s):")] + \
-           _build_clip_response(clips, full_content=full_content)
+        _build_clip_response(clips, full_content=full_content)
 
 
 async def _search_clips(args: dict) -> _ContentList:
@@ -215,7 +215,7 @@ async def _search_clips(args: dict) -> _ContentList:
         return [TextContent(type="text", text=f"No clips found matching '{query}'.")]
 
     return [TextContent(type="text", text=f"Found {len(clips)} clip(s) matching '{query}':")] + \
-           _build_clip_response(clips, full_content=full_content)
+        _build_clip_response(clips, full_content=full_content)
 
 
 async def _pin_clip(args: dict) -> _ContentList:
