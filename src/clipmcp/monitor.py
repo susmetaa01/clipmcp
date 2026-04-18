@@ -25,7 +25,6 @@ from __future__ import annotations
 import logging
 import platform
 import threading
-import time
 from abc import ABC, abstractmethod
 from typing import Optional
 

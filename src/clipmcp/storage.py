@@ -19,11 +19,12 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
-import os
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Generator, Optional
+
+from typing import Any
 
 from .config import config
 from .models import Clip, ContentCategory, ContentType
@@ -404,7 +405,7 @@ class ClipRepository:
     # Semantic search (v2.5)
     # ------------------------------------------------------------------
 
-    def store_embedding(self, clip_id: int, embedding: "np.ndarray") -> None:  # type: ignore[name-defined]
+    def store_embedding(self, clip_id: int, embedding: Any) -> None:
         """Persist an embedding vector for a clip as a BLOB."""
         from .embeddings import to_blob
         blob = to_blob(embedding)
@@ -438,7 +439,7 @@ class ClipRepository:
 
     def semantic_search_by_vector(
         self,
-        query_vec: "np.ndarray",  # type: ignore[name-defined]
+        query_vec: Any,
         limit: int = 10,
         category: Optional[str] = None,
         threshold: float = 0.3,
@@ -640,7 +641,7 @@ def get_stats() -> dict:
     return _default_repo.get_stats()
 
 
-def store_embedding(clip_id: int, embedding: "np.ndarray") -> None:  # type: ignore[name-defined]
+def store_embedding(clip_id: int, embedding: Any) -> None:
     return _default_repo.store_embedding(clip_id, embedding)
 
 
@@ -649,7 +650,7 @@ def get_clips_without_embeddings(limit: int = 500) -> list[tuple[int, str, str, 
 
 
 def semantic_search_by_vector(
-    query_vec: "np.ndarray",  # type: ignore[name-defined]
+    query_vec: Any,
     limit: int = 10,
     category: Optional[str] = None,
     threshold: float = 0.3,

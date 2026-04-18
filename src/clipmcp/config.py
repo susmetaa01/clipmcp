@@ -9,7 +9,6 @@ All other modules import the singleton `config` object from here.
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
