@@ -23,7 +23,6 @@ from __future__ import annotations
 import html as _html_stdlib
 import re
 from html.parser import HTMLParser
-from typing import Optional
 
 
 # ---------------------------------------------------------------------------
