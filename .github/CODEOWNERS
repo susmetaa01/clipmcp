@@ -1,0 +1,66 @@
+# CODEOWNERS — ClipMCP
+#
+# Each line maps a file pattern to one or more owners (GitHub users or teams).
+# When a PR touches a matching file, the listed owners are automatically
+# requested for review and their approval is required before merge
+# (if "Require review from Code Owners" is enabled in branch protection).
+#
+# Syntax:
+#   <pattern>   @<github-username-or-team>
+#
+# Patterns follow .gitignore rules. More specific patterns override broader ones.
+# The LAST matching pattern wins.
+#
+# Docs: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# ---------------------------------------------------------------------------
+# Global fallback — catches anything not matched below
+# ---------------------------------------------------------------------------
+*                                   @susmetaa01
+
+# ---------------------------------------------------------------------------
+# Core storage & data model
+# Any change to how data is stored, migrated, or structured requires sign-off.
+# ---------------------------------------------------------------------------
+src/clipmcp/storage.py              @susmetaa01
+src/clipmcp/models.py               @susmetaa01
+
+# ---------------------------------------------------------------------------
+# Security-sensitive modules
+# Sensitive data detection and encryption must be reviewed carefully.
+# ---------------------------------------------------------------------------
+src/clipmcp/sensitive.py            @susmetaa01
+
+# ---------------------------------------------------------------------------
+# MCP server & tool definitions
+# Changes here affect the Claude-facing API surface.
+# ---------------------------------------------------------------------------
+src/clipmcp/server.py               @susmetaa01
+
+# ---------------------------------------------------------------------------
+# Clipboard monitor — platform-specific, easy to break silently
+# ---------------------------------------------------------------------------
+src/clipmcp/monitor.py              @susmetaa01
+
+# ---------------------------------------------------------------------------
+# ML / embeddings — model changes can silently degrade search quality
+# ---------------------------------------------------------------------------
+src/clipmcp/embeddings.py           @susmetaa01
+
+# ---------------------------------------------------------------------------
+# Dependencies & build config
+# Changes to pyproject.toml affect every user who installs the package.
+# ---------------------------------------------------------------------------
+pyproject.toml                      @susmetaa01
+
+# ---------------------------------------------------------------------------
+# CI / branch protection config
+# Only repo admins should change the pipeline or ownership rules themselves.
+# ---------------------------------------------------------------------------
+.github/                            @susmetaa01
+Jenkinsfile                         @susmetaa01
+
+# ---------------------------------------------------------------------------
+# Tests — lower risk but still require owner awareness
+# ---------------------------------------------------------------------------
+tests/                              @susmetaa01
