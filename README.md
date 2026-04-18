@@ -27,8 +27,8 @@ A standalone clipboard history MCP server for macOS. Monitors your system clipbo
 
 **1. Clone the repo**
 ```bash
-git clone <your-repo-url>
-cd clipmcpxx
+git clone https://github.com/susmetaa01/clipmcp.git
+cd clipmcp
 ```
 
 **2. Install the package**
@@ -81,7 +81,7 @@ Add the `mcpServers` block:
     "clipmcp": {
       "command": "/Users/<your-username>/.pyenv/versions/3.12.1/bin/python",
       "args": ["-m", "clipmcp"],
-      "cwd": "/path/to/clipmcpxx/src"
+      "cwd": "/path/to/clipmcp/src"
     }
   }
 }
@@ -221,7 +221,7 @@ All 96 tests should pass.
 ## Project structure
 
 ```
-clipmcpxx/
+clipmcp/
 ├── pyproject.toml              # Package config, dependencies, optional extras
 ├── README.md
 ├── src/
