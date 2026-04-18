@@ -1,0 +1,41 @@
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# pytest
+.pytest_cache/
+pytest-cache-files-*/
+.cache/
+
+# ClipMCP runtime data (local only, never commit)
+*.db
+*.db-shm
+*.db-wal
+images/
+
+# macOS
+.DS_Store
+
+# Secrets / env
+.env
+.env.*
+*.pem
+*.key
