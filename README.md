@@ -1,6 +1,6 @@
 # ClipMCP
 
-A standalone clipboard history MCP server for macOS. Monitors your system clipboard in real-time, stores history locally in SQLite, and exposes it to Claude and other MCP-compatible AI assistants — no third-party clipboard app required. All data stays on your machine.
+A standalone clipboard history MCP server for macOS. Monitors your system clipboard in real-time, stores history locally in SQLite, and exposes it to any MCP-compatible AI assistant — no third-party clipboard app required. All data stays on your machine.
 
 ---
 
@@ -8,10 +8,10 @@ A standalone clipboard history MCP server for macOS. Monitors your system clipbo
 
 - Captures **text, HTML, and images** from your clipboard automatically in the background
 - **Categorises** each clip: `error`, `code`, `url`, `email`, `path`, `sensitive`, `text`
-- **Detects sensitive content** (API keys, tokens, passwords) and flags it before Claude sees it
+- **Detects sensitive content** (API keys, tokens, passwords) and flags it before your AI assistant sees it
 - **Semantic search** — find clips by meaning, not just keywords (optional, local embeddings)
-- **Debug context bundling** — when you say "fix this error", Claude automatically pulls your recent error clips, code snippets, and logs together into one context block
-- Exposes 9 MCP tools Claude calls automatically based on conversation context
+- **Debug context bundling** — say "fix this error" and your AI assistant automatically pulls recent error clips, code snippets, and logs together into one context block
+- Exposes 9 MCP tools your AI assistant calls automatically based on conversation context
 
 ---
 
@@ -19,7 +19,7 @@ A standalone clipboard history MCP server for macOS. Monitors your system clipbo
 
 - macOS (Linux/Windows support planned)
 - Python 3.11+
-- Claude Desktop
+- Any MCP-compatible client (Cursor, VS Code, Claude Desktop, or others)
 
 ---
 
@@ -58,54 +58,103 @@ Press `Ctrl+C` to stop.
 
 ---
 
-## Connecting to Claude Desktop
+## Connecting to your AI client
 
-Open (or create) this file:
-```
-~/Library/Application Support/Claude/claude_desktop_config.json
-```
+ClipMCP works with any MCP-compatible client over stdio transport. Pick yours below.
 
-Add the `mcpServers` block:
+**MCP Inspector (browser UI — great for testing before connecting to a client)**
+```bash
+npx @modelcontextprotocol/inspector python -m clipmcp
+```
+Opens `http://localhost:5173` — call any of the 9 tools directly, inspect inputs and outputs, no client setup required.
+
+---
+
+**Cursor**
+
+Create or edit `~/.cursor/mcp.json`:
 ```json
 {
   "mcpServers": {
     "clipmcp": {
-      "command": "/Users/<your-username>/.pyenv/versions/3.12.1/bin/python",
+      "command": "python3",
       "args": ["-m", "clipmcp"],
       "cwd": "/path/to/clipmcp/src"
     }
   }
 }
 ```
+Restart Cursor. Open AI chat in **Agent mode** — ClipMCP tools are available automatically.
 
-To find your Python path:
-```bash
-which python3
+---
+
+**VS Code (v1.99+ with GitHub Copilot)**
+
+Create `.vscode/mcp.json` in your workspace, or `Cmd+Shift+P` → "MCP: Add Server":
+```json
+{
+  "servers": {
+    "clipmcp": {
+      "type": "stdio",
+      "command": "python3",
+      "args": ["-m", "clipmcp"],
+      "cwd": "/path/to/clipmcp/src"
+    }
+  }
+}
 ```
+Open **Copilot Chat** → switch to **Agent mode** → ClipMCP tools appear in the tool list.
 
-**Fully quit and restart Claude Desktop** (Cmd+Q, not just close the window).
+Note: VS Code uses `"servers"` (not `"mcpServers"`) and requires `"type": "stdio"` explicitly.
+
+---
+
+**Claude Desktop**
+
+Open `~/Library/Application Support/Claude/claude_desktop_config.json`:
+```json
+{
+  "mcpServers": {
+    "clipmcp": {
+      "command": "python3",
+      "args": ["-m", "clipmcp"],
+      "cwd": "/path/to/clipmcp/src"
+    }
+  }
+}
+```
+Fully quit and restart (Cmd+Q, not just close the window).
+
+---
+
+**Other clients**
+
+- [Continue.dev](https://continue.dev) — open-source VS Code AI extension
+- [mcp-cli](https://github.com/wong2/mcp-cli) — lightweight terminal client
+
+To find your Python path: `which python3`
 
 ---
 
 ## Verifying it works
 
 1. Copy any text to your clipboard
-2. Open Claude Desktop
+2. Open your AI client's chat
 3. Ask: *"What did I just copy?"*
 
-Claude will call `get_recent_clips` and show your clipboard history.
+The assistant will call `get_recent_clips` and show your clipboard history.
 
 For debug workflows:
-1. Copy an error or stack trace from your terminal/IDE
+1. Copy an error or stack trace from your terminal or IDE
 2. Ask: *"Fix this error"* or *"What's wrong?"*
 
-Claude will call `get_debug_context`, which surfaces error clips first, then code, then everything else — no pasting required.
+The assistant will call `get_debug_context`, which surfaces error clips first, then code, then everything else — no pasting required.
 
 ---
 
 ## Available MCP Tools
 
-Claude calls these automatically based on context. You never need to mention them.
+Your AI assistant calls these automatically based on context. You never need to mention them by name.
 
 | Tool | Triggered when you say… |
 |---|---|
@@ -177,7 +226,7 @@ clipmcp/
 
 ## Known limitations
 
-- **Gaps when Claude is closed** — the monitor only runs while Claude Desktop is open
+- **Gaps when your client is closed** — the monitor only runs while your AI client is open
 - **500 ms polling** — copying two things in very fast succession may miss the first
 - **Source app is best-effort** — reflects the frontmost app at poll time, not the app that triggered the copy
 - **Screenshot errors not yet categorised** — a screenshot of a stack trace is stored as `image`, not `error`. OCR support is on the roadmap
@@ -206,7 +255,7 @@ clipmcp/
 
 - All data is stored locally in `~/.clipmcp/` — nothing leaves your machine
 - Embeddings are computed locally using a bundled model
-- Sensitive content is flagged and never shown to Claude in full unless you explicitly request it
+- Sensitive content is flagged and never shown to your AI assistant in full unless you explicitly request it
 
 ---
 
